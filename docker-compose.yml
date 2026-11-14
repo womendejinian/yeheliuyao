@@ -1,0 +1,21 @@
+services:
+  liuyao:
+    build:
+      context: .
+      dockerfile: Dockerfile
+    container_name: liuyao
+    restart: unless-stopped
+    ports:
+      - "3000:3000"
+    volumes:
+      - ./data:/app/data
+    environment:
+      - NODE_ENV=production
+      - TZ=Asia/Shanghai
+      - SQLITE_DB_PATH=/app/data/liuyao.db
+      # 上游域名白名单（逗号分隔）：留空则允许所有合法的 http/https OpenAI 兼容接口地址
+      - LLM_ALLOWED_HOSTS=
+      # 可选：服务端兜底模型配置（用户在网页右上角「设置」未填 Key 时生效）
+      # - LLM_BASE_URL=https://api.deepseek.com/v1
+      # - LLM_MODEL=deepseek-chat
+      # - LLM_API_KEY=sk-xxxxxxxxxxxxxxxxxxxxxxxx
