@@ -16,7 +16,7 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unzip and apply mobile & UI patches
+      - name: Unzip and apply all fixes
         run: |
           for z in *.zip; do unzip -q -o "$z"; done
           python3 - << 'EOF'
@@ -34,7 +34,7 @@ jobs:
           )
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 2. 修复排盘结果页在手机端撑破屏幕、无法等比缩放的问题
+          # 2. 修复排盘结果页在手机端的等比缩放与宽度溢出
           p = os.path.join(root, 'components/liuyao/LiuyaoResult.tsx')
           s = open(p, encoding='utf-8').read()
           s = s.replace('<div className="lg:sticky lg:top-[86px]">', '<div className="min-w-0 lg:sticky lg:top-[86px]">')
@@ -52,40 +52,60 @@ jobs:
           )
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 3. 锁定手机端视口比例并禁止横向滚动晃动
+          # 3. 锁定手机视口比例，并确保电脑鼠标滚轮与手机上下滑动畅通
           p = os.path.join(root, 'app/layout.tsx')
           s = open(p, encoding='utf-8').read()
           s = s.replace("initialScale: 1,", "initialScale: 1, maximumScale: 1, userScalable: false,")
-          s = s.replace(
-              'className="flex min-h-full flex-col bg-[#F4F1E8] text-[#38423C] antialiased"',
-              'className="flex min-h-full w-full max-w-[100vw] flex-col overflow-x-hidden bg-[#F4F1E8] text-[#38423C] antialiased"'
-          )
+          s = s.replace('<html lang="zh-CN" className="h-full">', '<html lang="zh-CN">')
           open(p, 'w', encoding='utf-8').write(s)
 
           p = os.path.join(root, 'app/globals.css')
           s = open(p, encoding='utf-8').read()
-          s = s.replace(
-              "html,\nbody {\n  background: var(--bg);\n  color: var(--ink);\n}",
-              "html,\nbody {\n  background: var(--bg);\n  color: var(--ink);\n  overflow-x: hidden;\n  max-width: 100vw;\n  width: 100%;\n}"
-          )
+          s = s.replace("overscroll-behavior-y: none;", "overscroll-behavior-y: auto;")
+          s += "\nhtml, body { height: auto !important; overflow-x: visible !important; overflow-y: visible !important; }\n"
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 4. 跳过构建期 TS 校验 + 移除 thinking 非标参数防止解卦 400 报错
-          p = os.path.join(root, 'next.config.ts')
-          s = open(p, encoding='utf-8').read()
-          s = s.replace("devIndicators: false,", "devIndicators: false, typescript: { ignoreBuildErrors: true },")
-          open(p, 'w', encoding='utf-8').write(s)
-
+          # 4. 移除非标 thinking 参数（解决解卦 400 报错）并跳过构建期 TS 重复检查
           p = os.path.join(root, 'lib/readings/llm-request.ts')
           s = open(p, encoding='utf-8').read()
           s = s.replace("body.thinking = { type: cfg.thinking };", "// disabled thinking param")
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 5. 升级 Service Worker 缓存版本号，让手机浏览器自动刷新旧缓存
-          p = os.path.join(root, 'public/sw.js')
+          p = os.path.join(root, 'next.config.ts')
           s = open(p, encoding='utf-8').read()
-          s = s.replace("yehe-v1", "yehe-v2")
+          s = s.replace("devIndicators: false,", "devIndicators: false, typescript: { ignoreBuildErrors: true },")
           open(p, 'w', encoding='utf-8').write(s)
+
+          # 5. 自动注销并清理浏览器旧 Service Worker 缓存，防止样式被强缓存拦截
+          p = os.path.join(root, 'components/site/ServiceWorkerRegister.tsx')
+          s = """'use client';
+          import { useEffect } from 'react';
+          export default function ServiceWorkerRegister() {
+            useEffect(() => {
+              if (typeof window === 'undefined') return;
+              if ('serviceWorker' in navigator) {
+                navigator.serviceWorker.getRegistrations().then((rs) => rs.forEach((r) => r.unregister()));
+              }
+              if ('caches' in window) {
+                caches.keys().then((ks) => ks.forEach((k) => caches.delete(k)));
+              }
+            }, []);
+            return null;
+          }
+          """
+          open(p, 'w', encoding='utf-8').write(s.strip() + "\n")
+
+          p = os.path.join(root, 'public/sw.js')
+          sw_kill = """self.addEventListener('install', () => self.skipWaiting());
+          self.addEventListener('activate', (event) => {
+            event.waitUntil((async () => {
+              const keys = await caches.keys();
+              await Promise.all(keys.map((k) => caches.delete(k)));
+              await self.registration.unregister();
+            })());
+          });
+          """
+          open(p, 'w', encoding='utf-8').write(sw_kill.strip() + "\n")
           EOF
 
       - name: Log in to GitHub Container Registry
