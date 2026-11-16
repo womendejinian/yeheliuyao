@@ -16,15 +16,16 @@ jobs:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unzip and apply all fixes
+      - name: Unzip and apply subpath & mobile fixes
         run: |
           for z in *.zip; do unzip -q -o "$z"; done
           python3 - << 'EOF'
           import os, re
 
           root = 'liuyao-main'
+          BASE = '/yeheliuyao'
 
-          # 1. 去掉右上角「项目」按钮及前面的分隔竖线
+          # 1. 去掉右上角「项目」按钮
           p = os.path.join(root, 'components/site/SiteHeader.tsx')
           s = open(p, encoding='utf-8').read()
           s = re.sub(
@@ -34,7 +35,7 @@ jobs:
           )
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 2. 修复排盘结果页在手机端的等比缩放与宽度溢出
+          # 2. 修复手机端等比缩放与滚动
           p = os.path.join(root, 'components/liuyao/LiuyaoResult.tsx')
           s = open(p, encoding='utf-8').read()
           s = s.replace('<div className="lg:sticky lg:top-[86px]">', '<div className="min-w-0 lg:sticky lg:top-[86px]">')
@@ -52,7 +53,6 @@ jobs:
           )
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 3. 锁定手机视口比例，并确保电脑鼠标滚轮与手机上下滑动畅通
           p = os.path.join(root, 'app/layout.tsx')
           s = open(p, encoding='utf-8').read()
           s = s.replace("initialScale: 1,", "initialScale: 1, maximumScale: 1, userScalable: false,")
@@ -65,18 +65,46 @@ jobs:
           s += "\nhtml, body { height: auto !important; overflow-x: visible !important; overflow-y: visible !important; }\n"
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 4. 移除非标 thinking 参数（解决解卦 400 报错）并跳过构建期 TS 重复检查
+          # 3. 设置 Next.js basePath 为 /yeheliuyao 并移除非标 thinking 参数
+          p = os.path.join(root, 'next.config.ts')
+          s = open(p, encoding='utf-8').read()
+          s = s.replace(
+              "devIndicators: false,",
+              f"basePath: '{BASE}', devIndicators: false, typescript: {{ ignoreBuildErrors: true }},"
+          )
+          open(p, 'w', encoding='utf-8').write(s)
+
           p = os.path.join(root, 'lib/readings/llm-request.ts')
           s = open(p, encoding='utf-8').read()
           s = s.replace("body.thinking = { type: cfg.thinking };", "// disabled thinking param")
           open(p, 'w', encoding='utf-8').write(s)
 
-          p = os.path.join(root, 'next.config.ts')
-          s = open(p, encoding='utf-8').read()
-          s = s.replace("devIndicators: false,", "devIndicators: false, typescript: { ignoreBuildErrors: true },")
-          open(p, 'w', encoding='utf-8').write(s)
+          # 4. 将静态资源与 API 请求路径统一加上 /yeheliuyao 前缀
+          replacements = {
+              'app/globals.css': [("url('/fonts/yehe-brand.woff2')", f"url('{BASE}/fonts/yehe-brand.woff2')")],
+              'app/layout.tsx': [("'/icons/", f"'{BASE}/icons/")],
+              'app/manifest.ts': [("'/icons/", f"'{BASE}/icons/")],
+              'components/liuyao/Coin.tsx': [("'/images/", f"'{BASE}/images/")],
+              'components/examples/ExamplesView.tsx': [
+                  ("fetch('/data/zengshan-cases.json')", f"fetch('{BASE}/data/zengshan-cases.json')"),
+                  ("return `/liuyao?${qs}`;", f"return `{BASE}/liuyao?${{qs}}`;"),
+              ],
+              'components/liuyao/ReadingPanel.tsx': [("fetch('/api/read'", f"fetch('{BASE}/api/read'")],
+              'components/site/SettingsDialog.tsx': [("fetch('/api/llm-test'", f"fetch('{BASE}/api/llm-test'")],
+              'lib/store/index.ts': [("fetch('/api/cases?probe=1'", f"fetch('{BASE}/api/cases?probe=1'")],
+              'lib/store/remote.ts': [
+                  ("'/api/cases'", f"'{BASE}/api/cases'"),
+                  ("`/api/cases?", f"`{BASE}/api/cases?"),
+              ],
+          }
+          for rel, pairs in replacements.items():
+              fp = os.path.join(root, rel)
+              c = open(fp, encoding='utf-8').read()
+              for old, new in pairs:
+                  c = c.replace(old, new)
+              open(fp, 'w', encoding='utf-8').write(c)
 
-          # 5. 自动注销并清理浏览器旧 Service Worker 缓存，防止样式被强缓存拦截
+          # 5. 注销旧 Service Worker 缓存
           p = os.path.join(root, 'components/site/ServiceWorkerRegister.tsx')
           s = """'use client';
           import { useEffect } from 'react';
@@ -94,18 +122,6 @@ jobs:
           }
           """
           open(p, 'w', encoding='utf-8').write(s.strip() + "\n")
-
-          p = os.path.join(root, 'public/sw.js')
-          sw_kill = """self.addEventListener('install', () => self.skipWaiting());
-          self.addEventListener('activate', (event) => {
-            event.waitUntil((async () => {
-              const keys = await caches.keys();
-              await Promise.all(keys.map((k) => caches.delete(k)));
-              await self.registration.unregister();
-            })());
-          });
-          """
-          open(p, 'w', encoding='utf-8').write(sw_kill.strip() + "\n")
           EOF
 
       - name: Log in to GitHub Container Registry
