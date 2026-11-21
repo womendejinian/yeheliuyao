@@ -25,6 +25,7 @@ jobs:
         working-directory: ./liuyao-main
         run: |
           npm ci
+          rm -rf liuyao-main/src/app/api liuyao-main/app/api
           npm run build
 
       - name: Generate PHP backend scripts
