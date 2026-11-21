@@ -1,31 +1,35 @@
-name: Docker Image CI
+name: Build PHP Virtual Host Package
 
 on:
   push:
     branches: [ "main", "master" ]
   workflow_dispatch:
 
-permissions:
-  contents: read
-  packages: write
-
 jobs:
-  build-and-push:
+  build-php-vhost:
     runs-on: ubuntu-latest
     steps:
       - name: Checkout repository
         uses: actions/checkout@v4
 
-      - name: Unzip and apply subpath & mobile fixes
+      - name: Setup Node.js 22
+        uses: actions/setup-node@v4
+        with:
+          node-version: 22
+
+      - name: Prepare static export and PHP APIs
         run: |
           for z in *.zip; do unzip -q -o "$z"; done
           python3 - << 'EOF'
-          import os, re
+          import os, re, shutil
 
           root = 'liuyao-main'
-          BASE = '/yeheliuyao'
+          BASE = ''
 
-          # 1. 去掉右上角「项目」按钮
+          # 1. 移除 Next.js 服务端 API 目录（改由 PHP 实现）
+          shutil.rmtree(os.path.join(root, 'app/api'), ignore_errors=True)
+
+          # 2. 去掉右上角「项目」按钮
           p = os.path.join(root, 'components/site/SiteHeader.tsx')
           s = open(p, encoding='utf-8').read()
           s = re.sub(
@@ -35,7 +39,7 @@ jobs:
           )
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 2. 修复手机端等比缩放与滚动
+          # 3. 修复手机端等比缩放与上下滚动
           p = os.path.join(root, 'components/liuyao/LiuyaoResult.tsx')
           s = open(p, encoding='utf-8').read()
           s = s.replace('<div className="lg:sticky lg:top-[86px]">', '<div className="min-w-0 lg:sticky lg:top-[86px]">')
@@ -65,48 +69,9 @@ jobs:
           s += "\nhtml, body { height: auto !important; overflow-x: visible !important; overflow-y: visible !important; }\n"
           open(p, 'w', encoding='utf-8').write(s)
 
-          # 3. 设置 Next.js basePath 为 /yeheliuyao 并移除非标 thinking 参数
-          p = os.path.join(root, 'next.config.ts')
-          s = open(p, encoding='utf-8').read()
-          s = s.replace(
-              "devIndicators: false,",
-              f"basePath: '{BASE}', devIndicators: false, typescript: {{ ignoreBuildErrors: true }},"
-          )
-          open(p, 'w', encoding='utf-8').write(s)
-
-          p = os.path.join(root, 'lib/readings/llm-request.ts')
-          s = open(p, encoding='utf-8').read()
-          s = s.replace("body.thinking = { type: cfg.thinking };", "// disabled thinking param")
-          open(p, 'w', encoding='utf-8').write(s)
-
-          # 4. 将静态资源与 API 请求路径统一加上 /yeheliuyao 前缀
-          replacements = {
-              'app/globals.css': [("url('/fonts/yehe-brand.woff2')", f"url('{BASE}/fonts/yehe-brand.woff2')")],
-              'app/layout.tsx': [("'/icons/", f"'{BASE}/icons/")],
-              'app/manifest.ts': [("'/icons/", f"'{BASE}/icons/")],
-              'components/liuyao/Coin.tsx': [("'/images/", f"'{BASE}/images/")],
-              'components/examples/ExamplesView.tsx': [
-                  ("fetch('/data/zengshan-cases.json')", f"fetch('{BASE}/data/zengshan-cases.json')"),
-                  ("return `/liuyao?${qs}`;", f"return `{BASE}/liuyao?${{qs}}`;"),
-              ],
-              'components/liuyao/ReadingPanel.tsx': [("fetch('/api/read'", f"fetch('{BASE}/api/read'")],
-              'components/site/SettingsDialog.tsx': [("fetch('/api/llm-test'", f"fetch('{BASE}/api/llm-test'")],
-              'lib/store/index.ts': [("fetch('/api/cases?probe=1'", f"fetch('{BASE}/api/cases?probe=1'")],
-              'lib/store/remote.ts': [
-                  ("'/api/cases'", f"'{BASE}/api/cases'"),
-                  ("`/api/cases?", f"`{BASE}/api/cases?"),
-              ],
-          }
-          for rel, pairs in replacements.items():
-              fp = os.path.join(root, rel)
-              c = open(fp, encoding='utf-8').read()
-              for old, new in pairs:
-                  c = c.replace(old, new)
-              open(fp, 'w', encoding='utf-8').write(c)
-
-          # 5. 注销旧 Service Worker 缓存
+          # 4. 禁用 Service Worker 强缓存
           p = os.path.join(root, 'components/site/ServiceWorkerRegister.tsx')
-          s = """'use client';
+          sw_reg = """'use client';
           import { useEffect } from 'react';
           export default function ServiceWorkerRegister() {
             useEffect(() => {
@@ -121,20 +86,419 @@ jobs:
             return null;
           }
           """
-          open(p, 'w', encoding='utf-8').write(s.strip() + "\n")
+          open(p, 'w', encoding='utf-8').write(sw_reg.strip() + "\n")
+
+          # 5. 将前端 API 请求指向 PHP 接口，并为案例页排盘链接补齐尾部斜杠
+          replacements = {
+              'components/examples/ExamplesView.tsx': [
+                  ("return `/liuyao?${qs}`;", "return `/liuyao/?${qs}`;"),
+              ],
+              'components/liuyao/ReadingPanel.tsx': [("fetch('/api/read'", "fetch('/api/read.php'")],
+              'components/site/SettingsDialog.tsx': [("fetch('/api/llm-test'", "fetch('/api/llm-test.php'")],
+              'lib/store/index.ts': [("fetch('/api/cases?probe=1'", "fetch('/api/cases.php?probe=1'")],
+              'lib/store/remote.ts': [
+                  ("'/api/cases'", "'/api/cases.php'"),
+                  ("`/api/cases?", "`/api/cases.php?"),
+              ],
+          }
+          for rel, pairs in replacements.items():
+              fp = os.path.join(root, rel)
+              c = open(fp, encoding='utf-8').read()
+              for old, new in pairs:
+                  c = c.replace(old, new)
+              open(fp, 'w', encoding='utf-8').write(c)
+
+          # 6. 配置 Next.js 为纯静态导出模式（根目录）
+          nc = """import type { NextConfig } from 'next';
+          const nextConfig: NextConfig = {
+            output: 'export',
+            trailingSlash: true,
+            images: { unoptimized: true },
+            typescript: { ignoreBuildErrors: true },
+          };
+          export default nextConfig;
+          """
+          open(os.path.join(root, 'next.config.ts'), 'w', encoding='utf-8').write(nc)
           EOF
 
-      - name: Log in to GitHub Container Registry
-        uses: docker/login-action@v3
-        with:
-          registry: ghcr.io
-          username: ${{ github.actor }}
-          password: ${{ secrets.GITHUB_TOKEN }}
+      - name: Build static website
+        working-directory: ./liuyao-main
+        run: |
+          npm ci
+          npm run build
 
-      - name: Build and push Docker image
-        uses: docker/build-push-action@v6
+      - name: Generate PHP backend scripts
+        run: |
+          mkdir -p liuyao-main/out/api/data
+          cp liuyao-main/docs/prompt-liuyao.md liuyao-main/out/api/prompt-spec.txt
+
+          cat << 'EOF' > liuyao-main/out/api/.htaccess
+          <FilesMatch "\.(txt|db|sqlite)$">
+            Require all denied
+          </FilesMatch>
+          EOF
+
+          cat << 'EOF' > liuyao-main/out/api/llm-test.php
+          <?php
+          header('Content-Type: application/json; charset=utf-8');
+          if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+              http_response_code(405);
+              echo json_encode(['ok' => false, 'error' => 'Method Not Allowed'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          $raw = file_get_contents('php://input');
+          $data = json_decode($raw, true);
+          if (!is_array($data)) {
+              echo json_encode(['ok' => false, 'error' => '请求体必须是 JSON'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          $baseUrl = rtrim(trim($data['baseUrl'] ?? ''), '/');
+          $model = trim($data['model'] ?? '');
+          $apiKey = trim($data['apiKey'] ?? '');
+          if (!$baseUrl || !$model) {
+              echo json_encode(['ok' => false, 'error' => '接口地址或模型名为空'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          $parts = parse_url($baseUrl);
+          $scheme = strtolower($parts['scheme'] ?? '');
+          $host = strtolower($parts['host'] ?? '');
+          if (!in_array($scheme, ['http', 'https'], true) || !$host) {
+              echo json_encode(['ok' => false, 'error' => '接口地址不合法'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          $headers = ['Content-Type: application/json'];
+          if ($apiKey !== '') {
+              $headers[] = 'Authorization: Bearer ' . $apiKey;
+          }
+          if (substr($host, -11) === 'opencode.ai') {
+              $headers[] = 'x-opencode-session: liuyao-php-' . uniqid();
+          }
+          $payload = json_encode([
+              'model' => $model,
+              'stream' => false,
+              'max_tokens' => 16,
+              'temperature' => 0,
+              'messages' => [['role' => 'user', 'content' => '连通性测试，请只回复两个字：可用']],
+          ], JSON_UNESCAPED_UNICODE);
+
+          $ch = curl_init($baseUrl . '/chat/completions');
+          curl_setopt_array($ch, [
+              CURLOPT_POST => true,
+              CURLOPT_HTTPHEADER => $headers,
+              CURLOPT_POSTFIELDS => $payload,
+              CURLOPT_RETURNTRANSFER => true,
+              CURLOPT_TIMEOUT => 25,
+              CURLOPT_SSL_VERIFYPEER => false,
+          ]);
+          $resp = curl_exec($ch);
+          $err = curl_error($ch);
+          $code = curl_getinfo($ch, CURLINFO_HTTP_CODE);
+          curl_close($ch);
+
+          if ($resp === false) {
+              echo json_encode(['ok' => false, 'error' => '连接失败：' . $err], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          if ($code < 200 || $code >= 300) {
+              echo json_encode(['ok' => false, 'error' => "上游返回 {$code}：" . mb_substr($resp, 0, 200)], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          $json = json_decode($resp, true);
+          $sample = $json['choices'][0]['message']['content'] ?? mb_substr($resp, 0, 80);
+          echo json_encode(['ok' => true, 'model' => $model, 'sample' => $sample], JSON_UNESCAPED_UNICODE);
+          EOF
+
+          cat << 'EOF' > liuyao-main/out/api/read.php
+          <?php
+          @ini_set('output_buffering', 'off');
+          @ini_set('zlib.output_compression', false);
+          while (ob_get_level() > 0) { @ob_end_clean(); }
+
+          if ($_SERVER['REQUEST_METHOD'] !== 'POST') {
+              http_response_code(405);
+              header('Content-Type: application/json; charset=utf-8');
+              echo json_encode(['error' => 'Method Not Allowed'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+
+          $raw = file_get_contents('php://input');
+          $body = json_decode($raw, true);
+          $facts = $body['facts'] ?? null;
+          $llm = $body['llm'] ?? null;
+
+          if (!is_array($facts) || ($facts['kind'] ?? '') !== 'liuyao' || !is_array($facts['lines'] ?? null)) {
+              http_response_code(400);
+              header('Content-Type: application/json; charset=utf-8');
+              echo json_encode(['error' => '盘面事实不合法'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+          if (!is_array($llm)) {
+              http_response_code(501);
+              header('Content-Type: application/json; charset=utf-8');
+              echo json_encode(['error' => '还没有配置大模型：点右上角「设置」填入接口地址、模型与 API Key'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+
+          $baseUrl = rtrim(trim($llm['baseUrl'] ?? ''), '/');
+          $model = trim($llm['model'] ?? '');
+          $apiKey = trim($llm['apiKey'] ?? '');
+          $parts = parse_url($baseUrl);
+          $scheme = strtolower($parts['scheme'] ?? '');
+          $host = strtolower($parts['host'] ?? '');
+          if (!in_array($scheme, ['http', 'https'], true) || !$host || !$model) {
+              http_response_code(400);
+              header('Content-Type: application/json; charset=utf-8');
+              echo json_encode(['error' => '接口地址或模型名不合法'], JSON_UNESCAPED_UNICODE);
+              exit;
+          }
+
+          $lines = $facts['lines'];
+          usort($lines, function ($a, $b) { return ($b['position'] ?? 0) - ($a['position'] ?? 0); });
+          $lineRows = [];
+          foreach ($lines as $l) {
+              $marks = [];
+              if (!empty($l['isWorld'])) $marks[] = '世';
+              if (!empty($l['isResponse'])) $marks[] = '应';
+              if (!empty($l['isMoving'])) $marks[] = !empty($l['isYang']) ? '○动' : '×动';
+              if (!empty($l['void'])) $marks[] = '旬空';
+              if (!empty($l['monthBroken'])) $marks[] = '月破';
+              foreach (($l['stars'] ?? []) as $st) { if ($st) $marks[] = $st; }
+              $markStr = $marks ? '［' . implode('·', $marks) . '］' : '';
+              $hidden = !empty($l['hidden']) ? '，伏神' . ($l['hidden']['relation'] ?? '') . ($l['hidden']['najia'] ?? '') : '';
+              $changed = !empty($l['changed']) ? '，动化' . ($l['changed']['relation'] ?? '') . ($l['changed']['najia'] ?? '') : '';
+              $lineRows[] = ($l['position'] ?? '') . '爻 ' . ($l['sixGod'] ?? '') . ' ' . ($l['relation'] ?? '') . ($l['najia'] ?? '') . $markStr . $hidden . $changed;
+          }
+
+          $s = $facts['shensha'] ?? [];
+          $shenshaStr = implode('｜', [
+              '贵人 ' . ($s['guiren'] ?? ''), '禄神 ' . ($s['lushen'] ?? ''), '羊刃 ' . ($s['yangren'] ?? ''),
+              '文昌 ' . ($s['wenchang'] ?? ''), '驿马 ' . ($s['yima'] ?? ''), '桃花 ' . ($s['taohua'] ?? ''),
+              '将星 ' . ($s['jiangxing'] ?? ''), '华盖 ' . ($s['huagai'] ?? ''), '谋星 ' . ($s['mouxing'] ?? ''),
+              '劫煞 ' . ($s['jiesha'] ?? ''), '灾煞 ' . ($s['zaisha'] ?? ''), '天医 ' . ($s['tianyi'] ?? ''),
+              '天喜 ' . ($s['tianxi'] ?? '')
+          ]);
+
+          $oracle = $facts['oracle'] ?? [];
+          $oracleBits = ['本卦卦辞：' . ($oracle['baseGuaCi'] ?? '（未收）')];
+          if (!empty($oracle['changedGuaCi']) && !empty($facts['changed'])) {
+              $oracleBits[] = '变卦卦辞：' . $oracle['changedGuaCi'];
+          }
+          foreach (($oracle['movingLines'] ?? []) as $y) {
+              $oracleBits[] = '动爻爻辞：' . ($y['text'] ?? '');
+          }
+          if (!empty($oracle['yong'])) {
+              $oracleBits[] = ($oracle['yong']['title'] ?? '') . '：' . ($oracle['yong']['text'] ?? '');
+          }
+
+          $base = $facts['base'] ?? [];
+          $baseTags = !empty($base['tags']) ? '·' . implode('', $base['tags']) : '';
+          $changedGua = !empty($facts['changed'])
+              ? ($facts['changed']['name'] ?? '') . '（' . ($facts['changed']['palace'] ?? '') . '宫·' . ($facts['changed']['element'] ?? '') . '）'
+              : '无（六爻安静）';
+          $movingStr = !empty($facts['movingLines']) ? implode('、', $facts['movingLines']) : '无';
+          $voidStr = implode('', $facts['voidBranches'] ?? []);
+          $mb = $facts['monthBody'] ?? [];
+          $mbStr = ($mb['branch'] ?? '') . (!empty($mb['position']) ? '（' . $mb['position'] . '爻）' : '（不现）');
+
+          $userPrompt = implode("\n", [
+              '【起卦】' . ($facts['time']['solar'] ?? '') . ' · ' . ($facts['time']['ganzhi'] ?? ''),
+              '【所问】' . (!empty($facts['question']) ? $facts['question'] : '（未填写）'),
+              '【本卦】' . ($base['name'] ?? '') . '（' . ($base['palace'] ?? '') . '宫·' . ($base['element'] ?? '') . $baseTags . '）',
+              '【变卦】' . $changedGua,
+              '【动爻】' . $movingStr,
+              '【旬空】' . $voidStr . ' 【月卦身】' . $mbStr,
+              '【十三神煞】' . $shenshaStr,
+              '【经文】' . implode("\n", $oracleBits),
+              "【六爻（上→初）】\n" . implode("\n", $lineRows),
+              '',
+              '请按四段写出这一卦的解读。盘面已是定局，不必重排，也不要复述全部爻位。',
+              '（以上事实由引擎确定性排出；不要改写事实本身。）'
+          ]);
+
+          $systemPrompt = file_get_contents(__DIR__ . '/prompt-spec.txt');
+
+          header('Content-Type: text/event-stream; charset=utf-8');
+          header('Cache-Control: no-store, no-transform');
+          header('X-Accel-Buffering: no');
+
+          $reqObj = [
+              'model' => $model,
+              'stream' => true,
+              'temperature' => 0.3,
+              'max_tokens' => 4096,
+              'messages' => [
+                  ['role' => 'system', 'content' => $systemPrompt],
+                  ['role' => 'user', 'content' => $userPrompt],
+              ],
+          ];
+          if (($llm['thinking'] ?? '') === 'enabled') {
+              $reqObj['thinking'] = ['type' => 'enabled'];
+          }
+          if (!empty($llm['reasoningEffort'])) {
+              $reqObj['reasoning_effort'] = $llm['reasoningEffort'];
+          }
+
+          $headers = ['Content-Type: application/json'];
+          if ($apiKey !== '') $headers[] = 'Authorization: Bearer ' . $apiKey;
+          if (substr($host, -11) === 'opencode.ai') $headers[] = 'x-opencode-session: liuyao-php-' . uniqid();
+
+          $sseBuf = '';
+          $errBuf = '';
+          $httpStatus = 0;
+
+          $ch = curl_init($baseUrl . '/chat/completions');
+          curl_setopt_array($ch, [
+              CURLOPT_POST => true,
+              CURLOPT_HTTPHEADER => $headers,
+              CURLOPT_POSTFIELDS => json_encode($reqObj, JSON_UNESCAPED_UNICODE),
+              CURLOPT_TIMEOUT => 120,
+              CURLOPT_SSL_VERIFYPEER => false,
+              CURLOPT_HEADERFUNCTION => function ($ch, $headerLine) use (&$httpStatus) {
+                  if (preg_match('/^HTTP\/\S+\s+(\d+)/', $headerLine, $m)) {
+                      $httpStatus = (int)$m[1];
+                  }
+                  return strlen($headerLine);
+              },
+              CURLOPT_WRITEFUNCTION => function ($ch, $chunk) use (&$sseBuf, &$errBuf, &$httpStatus) {
+                  if ($httpStatus >= 400) {
+                      $errBuf .= $chunk;
+                      return strlen($chunk);
+                  }
+                  $sseBuf .= $chunk;
+                  while (($pos = strpos($sseBuf, "\n")) !== false) {
+                      $line = trim(substr($sseBuf, 0, $pos));
+                      $sseBuf = substr($sseBuf, $pos + 1);
+                      if (strpos($line, 'data:') !== 0) continue;
+                      $dataStr = trim(substr($line, 5));
+                      if ($dataStr === '' || $dataStr === '[DONE]') continue;
+                      $j = json_decode($dataStr, true);
+                      $content = $j['choices'][0]['delta']['content'] ?? null;
+                      if (is_string($content) && $content !== '') {
+                          echo 'data: ' . json_encode(['content' => $content], JSON_UNESCAPED_UNICODE) . "\n\n";
+                          @flush();
+                      }
+                  }
+                  return strlen($chunk);
+              },
+          ]);
+
+          $ok = curl_exec($ch);
+          $curlErr = curl_error($ch);
+          curl_close($ch);
+
+          if ($ok === false) {
+              echo 'data: ' . json_encode(['error' => '上游模型不可达：' . $curlErr], JSON_UNESCAPED_UNICODE) . "\n\n";
+          } elseif ($httpStatus >= 400) {
+              echo 'data: ' . json_encode(['error' => "上游返回 {$httpStatus}：" . mb_substr(trim($errBuf), 0, 200)], JSON_UNESCAPED_UNICODE) . "\n\n";
+          } else {
+              echo "data: {\"done\":true}\n\n";
+          }
+          @flush();
+          EOF
+
+          cat << 'EOF' > liuyao-main/out/api/cases.php
+          <?php
+          header('Content-Type: application/json; charset=utf-8');
+          header('Cache-Control: no-store');
+
+          if (!extension_loaded('pdo_sqlite')) {
+              echo json_encode(['mode' => 'memory', 'cases' => []]);
+              exit;
+          }
+
+          $dbDir = __DIR__ . '/data';
+          if (!is_dir($dbDir)) @mkdir($dbDir, 0755, true);
+          $pdo = new PDO('sqlite:' . $dbDir . '/liuyao.db');
+          $pdo->setAttribute(PDO::ATTR_ERRMODE, PDO::ERRMODE_EXCEPTION);
+          $pdo->exec("CREATE TABLE IF NOT EXISTS cases (
+              id TEXT PRIMARY KEY,
+              owner_id TEXT NOT NULL,
+              kind TEXT NOT NULL,
+              created_at TEXT NOT NULL,
+              time_input TEXT NOT NULL,
+              question TEXT NOT NULL DEFAULT '',
+              gender TEXT,
+              input_json TEXT NOT NULL,
+              summary_json TEXT NOT NULL,
+              favorite INTEGER NOT NULL DEFAULT 0
+          )");
+
+          $ownerId = $_COOKIE['ly_device'] ?? '';
+          if (!preg_match('/^[0-9a-f-]{36}$/i', $ownerId)) {
+              $ownerId = sprintf('%04x%04x-%04x-%04x-%04x-%04x%04x%04x',
+                  mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff),
+                  mt_rand(0, 0x0fff) | 0x4000, mt_rand(0, 0x3fff) | 0x8000,
+                  mt_rand(0, 0xffff), mt_rand(0, 0xffff), mt_rand(0, 0xffff));
+              $isHttps = (!empty($_SERVER['HTTPS']) && $_SERVER['HTTPS'] !== 'off') || (($_SERVER['HTTP_X_FORWARDED_PROTO'] ?? '') === 'https');
+              setcookie('ly_device', $ownerId, time() + 31536000, '/', '', $isHttps, true);
+          }
+
+          $method = $_SERVER['REQUEST_METHOD'];
+          if ($method === 'GET') {
+              if (!empty($_GET['probe'])) {
+                  echo json_encode(['mode' => 'd1']);
+                  exit;
+              }
+              $id = $_GET['id'] ?? '';
+              if ($id !== '') {
+                  $stmt = $pdo->prepare('SELECT * FROM cases WHERE owner_id = ? AND id = ? AND kind = ?');
+                  $stmt->execute([$ownerId, $id, 'liuyao']);
+                  $r = $stmt->fetch(PDO::FETCH_ASSOC);
+                  if (!$r) { http_response_code(404); echo json_encode(['mode' => 'd1', 'case' => null]); exit; }
+                  $rec = [
+                      'id' => $r['id'], 'schema' => 1, 'kind' => 'liuyao', 'createdAt' => $r['created_at'],
+                      'timeInput' => $r['time_input'], 'question' => $r['question'],
+                      'input' => json_decode($r['input_json'], true), 'summary' => json_decode($r['summary_json'], true)
+                  ];
+                  if ($r['gender']) $rec['gender'] = $r['gender'];
+                  if ($r['favorite']) $rec['favorite'] = true;
+                  echo json_encode(['mode' => 'd1', 'case' => $rec], JSON_UNESCAPED_UNICODE);
+                  exit;
+              }
+              $stmt = $pdo->prepare('SELECT * FROM cases WHERE owner_id = ? AND kind = ? ORDER BY created_at DESC LIMIT 200');
+              $stmt->execute([$ownerId, 'liuyao']);
+              $list = [];
+              foreach ($stmt->fetchAll(PDO::FETCH_ASSOC) as $r) {
+                  $rec = [
+                      'id' => $r['id'], 'schema' => 1, 'kind' => 'liuyao', 'createdAt' => $r['created_at'],
+                      'timeInput' => $r['time_input'], 'question' => $r['question'],
+                      'input' => json_decode($r['input_json'], true), 'summary' => json_decode($r['summary_json'], true)
+                  ];
+                  if ($r['gender']) $rec['gender'] = $r['gender'];
+                  if ($r['favorite']) $rec['favorite'] = true;
+                  $list[] = $rec;
+              }
+              echo json_encode(['mode' => 'd1', 'cases' => $list], JSON_UNESCAPED_UNICODE);
+          } elseif ($method === 'POST') {
+              $body = json_decode(file_get_contents('php://input'), true);
+              $items = is_array($body['cases'] ?? null) ? $body['cases'] : [($body['record'] ?? null)];
+              $stmt = $pdo->prepare('REPLACE INTO cases (id, owner_id, kind, created_at, time_input, question, gender, input_json, summary_json, favorite) VALUES (?,?,?,?,?,?,?,?,?,?)');
+              foreach ($items as $rec) {
+                  if (!is_array($rec) || empty($rec['id'])) continue;
+                  $stmt->execute([
+                      $rec['id'], $ownerId, 'liuyao', $rec['createdAt'] ?? date('c'), $rec['timeInput'] ?? '',
+                      $rec['question'] ?? '', $rec['gender'] ?? null,
+                      json_encode($rec['input'] ?? [], JSON_UNESCAPED_UNICODE),
+                      json_encode($rec['summary'] ?? [], JSON_UNESCAPED_UNICODE),
+                      !empty($rec['favorite']) ? 1 : 0
+                  ]);
+              }
+              echo json_encode(['ok' => true, 'mode' => 'd1']);
+          } elseif ($method === 'PATCH') {
+              $body = json_decode(file_get_contents('php://input'), true);
+              $stmt = $pdo->prepare('UPDATE cases SET favorite = ? WHERE owner_id = ? AND id = ?');
+              $stmt->execute([!empty($body['favorite']) ? 1 : 0, $ownerId, $body['id'] ?? '']);
+              echo json_encode(['ok' => true]);
+          } elseif ($method === 'DELETE') {
+              $stmt = $pdo->prepare('DELETE FROM cases WHERE owner_id = ? AND id = ?');
+              $stmt->execute([$ownerId, $_GET['id'] ?? '']);
+              echo json_encode(['ok' => true]);
+          }
+          EOF
+
+      - name: Upload PHP virtual host package
+        uses: actions/upload-artifact@v4
         with:
-          context: ./liuyao-main
-          file: ./liuyao-main/Dockerfile
-          push: true
-          tags: ghcr.io/womendejinian/yeheliuyao:latest
+          name: liuyao-php-vhost
+          path: liuyao-main/out/
+EOF
